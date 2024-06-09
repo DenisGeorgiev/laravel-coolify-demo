@@ -1,69 +1,49 @@
-FROM ubuntu:22.04
+############################################
+# Base Image
+############################################
 
-LABEL maintainer="Taylor Otwell"
+# Learn more about the Server Side Up PHP Docker Images at:
+# https://serversideup.net/open-source/docker-php/
+FROM serversideup/php:8.3-fpm-nginx as base
 
-ARG WWWGROUP
-ARG NODE_VERSION=18
-ARG POSTGRES_VERSION=15
+# Switch to root before installing our PHP extensions
+USER root
+RUN install-php-extensions bcmath gd
 
-WORKDIR /var/www/html
+############################################
+# Development Image
+############################################
+FROM base as development
 
-ENV DEBIAN_FRONTEND noninteractive
-ENV TZ=UTC
+# We can pass USER_ID and GROUP_ID as build arguments
+# to ensure the www-data user has the same UID and GID
+# as the user running Docker.
+ARG USER_ID
+ARG GROUP_ID
 
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# Switch to root so we can set the user ID and group ID
+USER root
+RUN docker-php-serversideup-set-id www-data $USER_ID:$GROUP_ID  && \
+    docker-php-serversideup-set-file-permissions --owner $USER_ID:$GROUP_ID --service nginx
 
-RUN apt-get update \
-    && apt-get install -y gnupg rsync gosu wget curl ca-certificates zip unzip git supervisor libaio1 sqlite3 libcap2-bin libpng-dev python2 dnsutils librsvg2-bin \
-    && curl -sS 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14aa40ec0831756756d7f66c4f4ea0aae5267a6c' | gpg --dearmor | tee /etc/apt/keyrings/ppa_ondrej_php.gpg > /dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/ppa_ondrej_php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy main" > /etc/apt/sources.list.d/ppa_ondrej_php.list \
-    && apt-get update \
-    && apt-get install -y php8.2-cli php8.2-dev \
-       php8.2-pgsql php8.2-sqlite3 php8.2-gd php8.2-imagick \
-       php8.2-curl \
-       php8.2-imap php8.2-mysql php8.2-mbstring \
-       php8.2-xml php8.2-zip php8.2-bcmath php8.2-soap \
-       php8.2-intl php8.2-readline \
-       php8.2-ldap \
-       php8.2-msgpack php8.2-igbinary php8.2-redis php8.2-swoole \
-       php8.2-memcached php8.2-pcov php8.2-xdebug \
-    && curl -sLS https://getcomposer.org/installer | php -- --install-dir=/usr/bin/ --filename=composer \
-    && curl -sLS https://deb.nodesource.com/setup_$NODE_VERSION.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g npm \
-    && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | gpg --dearmor | tee /etc/apt/keyrings/yarn.gpg >/dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/yarn.gpg] https://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
-    && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/keyrings/pgdg.gpg >/dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update \
-    && apt-get install -y yarn \
-    && apt-get install -y mysql-client \
-    && apt-get install -y postgresql-client-$POSTGRES_VERSION \
-    && apt-get -y autoremove \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# Switch back to the unprivileged www-data user
+USER www-data
 
-RUN setcap "cap_net_bind_service=+ep" /usr/bin/php8.2
+############################################
+# CI image
+############################################
+FROM base as ci
 
-RUN groupadd --force -g $WWWGROUP sail
-RUN useradd -ms /bin/bash --no-user-group -g $WWWGROUP -u 1337 sail
+# Sometimes CI images need to run as root
+# so we set the ROOT user and configure
+# the PHP-FPM pool to run as www-data
+USER root
+RUN echo "user = www-data" >> /usr/local/etc/php-fpm.d/docker-php-serversideup-pool.conf && \
+    echo "group = www-data" >> /usr/local/etc/php-fpm.d/docker-php-serversideup-pool.conf
 
-
-#RUN mkdir -p /usr/lib/oracle/21.11/client64
-
-#COPY instantnclient/instantclient_21_11 /usr/lib/oracle/21.11/client64/lib
-#RUN echo /usr/lib/oracle/21.11/client64/lib > /etc/ld.so.conf.d/oracle.conf
-#RUN ldconfig
-
-RUN pecl channel-update https://pecl.php.net/channel.xml
-
-RUN pecl install oci8
-
-COPY start-container /usr/local/bin/start-container
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY php.ini /etc/php/8.2/cli/conf.d/99-sail.ini
-RUN chmod +x /usr/local/bin/start-container
-
-EXPOSE 8000
-
-ENTRYPOINT ["start-container"]
+############################################
+# Production Image
+############################################
+FROM base as deploy
+COPY --chown=www-data:www-data . /var/www/html
+USER www-data

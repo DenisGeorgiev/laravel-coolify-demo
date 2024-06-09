@@ -1,8 +1,8 @@
 version: '3.8'
-
-
 services:
   php:
-    image: serversideup/php:8.2-fpm-nginx    
-#    volumes:
-      #- ./:/var/www/html
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/var/www/html/
